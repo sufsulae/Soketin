@@ -2,7 +2,7 @@
 Soketin is a simple asynchronous non-blocking-thread Socket Library.
 
 # Example
-SERVER
+Server:
 ```csharp
  //Create a service
 SoketinServer server = new SoketinServer(2112, SoketinType.TCP);
