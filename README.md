@@ -4,8 +4,8 @@ Soketin is a simple asynchronous non-blocking-thread Socket Library.
 # Example
 Server:
 ```csharp
- //Create a service
-SoketinServer server = new SoketinServer(2112, SoketinType.TCP);
+//Create a service
+SoketinServer server = new SoketinServer(2112);
 
 //Assign Callback
 server.OnUserConnected += (address) => {
@@ -15,54 +15,56 @@ server.OnUserDisconnected += (address) =>
 {
     Console.WriteLine("Disconnected! " + address.ToString());
 };
-server.OnReceivedData += (address, data) =>
+server.OnDataRecieved += (address, data) =>
 {
     Console.WriteLine(address.ToString() + ": " + Encoding.UTF8.GetString(data));
 };
 
 //Start the Server
-server.Start();
+server.StartServer();
 
-//Do Something while running
-while (server.isRunning)
+//Do Something while Server is Running
+while (true)
 {
-    //Broadcast message to all clients
-    var line = Console.ReadLine();
-    server.Send(Encoding.UTF8.GetBytes(line));
+    if (server.isRunning) {
+        //Broadcast message to all clients
+        var line = Console.ReadLine();
+        server.Send(Encoding.UTF8.GetBytes(line));
+    }
     Thread.Sleep(1);
 }
 ```
 Client:
 ```csharp
  //Create Service
-SoketinClient client = new SoketinClient(2112, SoketinType.TCP);
+SoketinClient client = new SoketinClient(2112);
 
 //Set the Option
 client.AutoReconnect = true;
 
 //Assign Callback
-client.OnConnected += (address) =>
-{
-    Console.WriteLine("Connected to Server: " + address.ToString());
+client.OnConnected += () => {
+    Console.WriteLine("Connected to Server!");
 };
-client.OnDisconnected += (address) =>
-{
-    Console.WriteLine("Disconnected to Server: " + address.ToString());
+client.OnDisconnected += () => {
+    Console.WriteLine("Disconnected from Server!");
 };
-client.OnReceivedData += (data) =>
-{
+client.OnDataRecieved += (address, data) => {
     Console.WriteLine("Server: " + Encoding.UTF8.GetString(data));
 };
 
 //Connect to Server
-client.Connect("192.168.8.101", 2112);
+client.Connect("127.0.0.1", 2112);
 
 //Do Something while connected
-while (client.isConnected)
+while (true)
 {
-    //Send Message to Server
-    var line = Console.ReadLine();
-    client.Send(Encoding.UTF8.GetBytes(line));
+    if (client.isConnected)
+    {
+        //Send Message to Server
+        var line = Console.ReadLine();
+        client.Send(Encoding.UTF8.GetBytes(line));
+    }
     Thread.Sleep(1);
 }
 ```
