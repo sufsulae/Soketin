@@ -1,4 +1,4 @@
-﻿/* Copyright 2020 Yusuf Sulaeman <ucupxh@gmail.com>
+﻿/* Copyright © 2020 Yusuf Sulaeman <ucupxh@gmail.com>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy of 
  * this software and associated documentation files (the "Software"), to deal in 
@@ -19,6 +19,8 @@
 */
 using System;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.NetworkInformation;
 
 namespace Soketin
 {
@@ -55,6 +57,17 @@ namespace Soketin
                 res.Add(data);
             }
             return res;
+        }
+        public static void CheckIP(IEnumerable<string> IpAdresses, Action<string, bool> OnResponse, int timeout = 1000) {
+            PingCompletedEventHandler pingHandler = (obj, e) => {
+                OnResponse?.Invoke((string)e.UserState, e.Reply != null && e.Reply.Status == IPStatus.Success);
+                ((Ping)obj).Dispose();
+            };
+            foreach (var ip in IpAdresses) {
+                Ping p = new Ping();
+                p.PingCompleted += pingHandler;
+                p.SendAsync(IPAddress.Parse(ip), timeout, ip);
+            }
         }
     }
 }

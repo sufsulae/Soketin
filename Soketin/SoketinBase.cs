@@ -1,4 +1,4 @@
-﻿/* Copyright 2020 Yusuf Sulaeman <ucupxh@gmail.com>
+﻿/* Copyright © 2020 Yusuf Sulaeman <ucupxh@gmail.com>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy of 
  * this software and associated documentation files (the "Software"), to deal in 
@@ -17,10 +17,35 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE 
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
+
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+
 namespace Soketin
 {
-    public enum SoketinType {
-        TCP = 6,
-        UDP = 17,
+    public abstract class SoketinBase
+    {
+        public virtual uint BufferSize { get; set; }
+        public virtual Socket Socket { get; protected set; }
+
+        public Action<IPAddress, byte[]> OnDataRecieved;
+        public Action<IPAddress, int> OnDataSended;
+
+        protected Thread _thread;
+        protected bool _stopSignal;
+
+        public SoketinBase() {
+            _thread = new Thread(ThreadWorker);
+            BufferSize = 8196;
+        }
+        protected virtual void ThreadWorker(object obj) {
+            while (!_stopSignal) {
+                OnThreadRun(obj);
+                Thread.Sleep(1);
+            }
+        }
+        protected virtual void OnThreadRun(object obj) { }
     }
 }
