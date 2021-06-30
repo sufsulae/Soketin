@@ -1,4 +1,4 @@
-﻿/* Copyright © 2020 Yusuf Sulaeman <ucupxh@gmail.com>
+﻿/* Copyright © 2021 Yusuf Sulaeman <sufsulae@gmail.com>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy of 
  * this software and associated documentation files (the "Software"), to deal in 
@@ -19,33 +19,20 @@
 */
 
 using System;
-using System.Net;
 using System.Net.Sockets;
-using System.Threading;
 
 namespace Soketin
 {
-    public abstract class SoketinBase
+    [Serializable]
+    public class SoketinUser
     {
-        public virtual uint BufferSize { get; set; }
-        public virtual Socket Socket { get; protected set; }
+        internal uint _id;
+        internal string _ipAddress;
+        internal int _port;
+        internal Socket _socket;
 
-        public Action<IPAddress, byte[]> OnDataRecieved;
-        public Action<IPAddress, int> OnDataSended;
-
-        protected Thread _thread;
-        protected bool _stopSignal;
-
-        public SoketinBase() {
-            _thread = new Thread(ThreadWorker);
-            BufferSize = 8196;
-        }
-        protected virtual void ThreadWorker(object obj) {
-            while (!_stopSignal) {
-                OnThreadRun(obj);
-                Thread.Sleep(1);
-            }
-        }
-        protected virtual void OnThreadRun(object obj) { }
+        public uint id { get { return _id; } }
+        public string ipAddress { get { return _ipAddress; } }
+        public int port { get { return _port; } }
     }
 }

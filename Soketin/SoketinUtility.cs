@@ -1,4 +1,4 @@
-﻿/* Copyright © 2020 Yusuf Sulaeman <ucupxh@gmail.com>
+﻿/* Copyright © 2021 Yusuf Sulaeman <sufsulae@gmail.com>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy of 
  * this software and associated documentation files (the "Software"), to deal in 
@@ -17,23 +17,28 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE 
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
+
 using System;
 using System.Collections.Generic;
-using System.Net;
-using System.Net.NetworkInformation;
+using System.IO;
+using System.IO.Compression;
+using System.Text;
 
 namespace Soketin
 {
-    internal static class SoketinUtility
+    public static class SoketinUtility
     {
-        public static byte[] PackRawData(byte[] rawData, int offset = 0) {
+        //Public Method
+        public static byte[] PackRawData(byte[] rawData, int offset = 0)
+        {
             var len = BitConverter.GetBytes(rawData.Length);
             var res = new byte[len.Length + rawData.Length];
             Buffer.BlockCopy(len, 0, res, 0, len.Length);
             Buffer.BlockCopy(rawData, offset, res, len.Length, rawData.Length - offset);
             return res;
         }
-        public static byte[] UnpackRawData(byte[] packedData, int offset = 0) {
+        public static byte[] UnpackRawData(byte[] packedData, int offset = 0)
+        {
 
             if (packedData.Length < 4)
                 throw new InvalidOperationException("Data is not in valid format");
@@ -46,28 +51,56 @@ namespace Soketin
             Buffer.BlockCopy(packedData, offset + 4, res, 0, len);
             return res;
         }
-        public static List<byte[]> SplitRawPacket(byte[] packedData, int packedDataLength = 0) {
+        public static List<byte[]> SplitRawPacket(byte[] packedData, int packedDataLength = 0)
+        {
             var res = new List<byte[]>();
             var count = 0;
             if (packedDataLength <= 0)
                 packedDataLength = packedData.Length;
-            while (count < packedDataLength) {
+            while (count < packedDataLength)
+            {
                 var data = UnpackRawData(packedData, count);
                 count += data.Length + 4;
                 res.Add(data);
             }
             return res;
         }
-        public static void CheckIP(IEnumerable<string> IpAdresses, Action<string, bool> OnResponse, int timeout = 1000) {
-            PingCompletedEventHandler pingHandler = (obj, e) => {
-                OnResponse?.Invoke((string)e.UserState, e.Reply != null && e.Reply.Status == IPStatus.Success);
-                ((Ping)obj).Dispose();
-            };
-            foreach (var ip in IpAdresses) {
-                Ping p = new Ping();
-                p.PingCompleted += pingHandler;
-                p.SendAsync(IPAddress.Parse(ip), timeout, ip);
+
+        public static byte[] ZipString(string str)
+        {
+            var raw = Encoding.UTF8.GetBytes(str);
+            using (var dataIn = new MemoryStream(raw))
+            {
+                using (var dataOut = new MemoryStream())
+                {
+                    using (var zip = new GZipStream(dataOut, CompressionMode.Compress))
+                    {
+                        dataIn.CopyTo(zip);
+                    }
+                    return dataOut.ToArray();
+                }
             }
+        }
+        public static string UnzipString(byte[] data)
+        {
+            using (var dataIn = new MemoryStream(data))
+            {
+                using (var dataOut = new MemoryStream())
+                {
+                    using (var zip = new GZipStream(dataIn, CompressionMode.Decompress))
+                    {
+                        zip.CopyTo(dataOut);
+                    }
+                    return Encoding.UTF8.GetString(dataOut.ToArray());
+                }
+            }
+        }
+
+        public static byte[] StringToBytes(string str) {
+            return Encoding.UTF8.GetBytes(str);
+        }
+        public static string BytesToString(byte[] data) {
+            return Encoding.UTF8.GetString(data);
         }
     }
 }

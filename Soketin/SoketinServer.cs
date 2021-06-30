@@ -1,4 +1,4 @@
-﻿/* Copyright © 2020 Yusuf Sulaeman <ucupxh@gmail.com>
+﻿/* Copyright © 2021 Yusuf Sulaeman <sufsulae@gmail.com>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy of 
  * this software and associated documentation files (the "Software"), to deal in 
@@ -17,6 +17,7 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE 
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
+
 using System;
 using System.Collections.Generic;
 using System.Net;
@@ -25,138 +26,146 @@ using System.Threading;
 
 namespace Soketin
 {
-    public class SoketinServer : SoketinBase
-    {
-        public bool isRunning { get; private set; }
-        public Socket[] Clients { get { return m_clientSockets.ToArray(); } }
-
-        public Action<IPAddress> OnUserConnected;
-        public Action<IPAddress> OnUserDisconnected;
-
-        private List<Socket> m_clientSockets;
-        private bool m_stopSignal;
-        
-        //Constructor
-        public SoketinServer(int port) {
-            m_clientSockets = new List<Socket>();
-
-            Socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            Socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.ReuseAddress, true);
-            Socket.Bind(new IPEndPoint(IPAddress.Any, port));
-            Socket.DontFragment = true;
-        }
-
-        //Public Method
-        public void StartServer() {
-            if (isRunning)
-                return;
-            Socket.Listen(100);
-            m_stopSignal = false;
-            isRunning = true;
-
-            SocketAsyncEventArgs recieveArgs = new SocketAsyncEventArgs();
-            recieveArgs.SetBuffer(new byte[BufferSize], 0, (int)BufferSize);
-            recieveArgs.Completed += (obj, e) =>
+    public class SoketinServer {
+        public bool useDispatcher { get; set; }
+        public SoketinUser[] clients { get { return m_clients.ToArray(); } }
+        public SoketinEvent onEvent
+        {
+            get { return m_event; }
+            set
             {
-                var client = (Socket)e.UserToken;
-                if (e.BytesTransferred > 0 && e.SocketError == SocketError.Success)
-                {
-                    var splittedData = SoketinUtility.SplitRawPacket(e.Buffer, e.BytesTransferred);
-                    foreach (var data in splittedData)
-                        OnDataRecieved?.Invoke(((IPEndPoint)client.RemoteEndPoint).Address, data);
-                    if (!m_stopSignal)
-                        client.ReceiveFromAsync(e);
-                }
+                if (value == null)
+                    m_event = new SoketinEventImpl();
                 else
-                {
-                    try
-                    {
-                        client.Shutdown(SocketShutdown.Send);
-                    }
-                    catch (Exception)
-                    {
-                        client.Close();
-                    }
-
-                }
-            };
-
-            SocketAsyncEventArgs accArgs = new SocketAsyncEventArgs();
-            accArgs.Completed += (obj, e) =>
-            {
-                if (e.SocketError == SocketError.Success && e.AcceptSocket != null)
-                {
-                    var clientSock = e.AcceptSocket;
-                    m_clientSockets.Add(clientSock);
-                    var address = ((IPEndPoint)clientSock.RemoteEndPoint).Address;
-                    OnUserConnected?.Invoke(address);
-                    recieveArgs.RemoteEndPoint = clientSock.RemoteEndPoint;
-                    recieveArgs.UserToken = clientSock;
-                    clientSock.ReceiveFromAsync(recieveArgs);
-                }
-                e.AcceptSocket = null;
-                if (!m_stopSignal)
-                    Socket.AcceptAsync(e);
-            };
-            Socket.AcceptAsync(accArgs);
-
-            _thread.Start(null);
-        }
-        public void StopServer()
-        {
-            if (!isRunning)
-                return;
-            m_stopSignal = true;
-            isRunning = false;
-            _thread.Join();
-            Socket.Close();
-        }
-        public void Send(byte[] data, string ip = null)
-        {
-            if (data == null)
-                return;
-            data = SoketinUtility.PackRawData(data);
-            if (ip == null)
-            {
-                foreach (var client in m_clientSockets)
-                {
-                    IPAddress address = ((IPEndPoint)client.RemoteEndPoint).Address;
-                    client.BeginSend(data, 0, data.Length, SocketFlags.None, (e) => {
-                        OnDataSended?.Invoke(address, client.EndSend(e));
-                    }, null);
-                }
+                    m_event = value;
             }
+        }
+
+        private Socket m_socket;
+        private uint m_port;
+        private bool m_signalStop;
+        private ManualResetEventSlim m_signalAccept;
+        private List<SoketinUser> m_clients;
+        private Thread m_listenerThread;
+        private byte[] m_buffer;
+        private uint m_userID;
+        private SoketinEvent m_event;
+
+        public SoketinServer(uint port) {
+            m_port = port;
+        }
+        ~SoketinServer() {
+            StopServer();
+        }
+
+        public void StartServer() {
+            m_signalStop = false;
+            m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            m_socket.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.ReuseAddress, true);
+            m_socket.DontFragment = true;
+
+            m_socket.Bind(new IPEndPoint(IPAddress.Any, (int)m_port));
+            m_socket.Listen(100);
+            m_clients = new List<SoketinUser>();
+            m_signalAccept = new ManualResetEventSlim(false);
+            m_buffer = new byte[8196];
+
+            m_listenerThread = new Thread(_listenerThread);
+            m_listenerThread.Start();
+            _execute((Action)onEvent.OnServiceStart);
+        }
+        public void StopServer() {
+            m_signalStop = true;
+            m_signalAccept.Reset();
+            if (m_socket.Connected)
+                m_socket.Shutdown(SocketShutdown.Both);
+            m_socket.Close();
+            m_signalAccept.Dispose();
+            m_buffer = null;
+            _execute((Action)onEvent.OnServiceStop);
+        }
+        public void Broadcast(byte[] data) {
+            var packedData = SoketinUtility.PackRawData(data);
+            foreach (var client in m_clients) {
+                Send(client, packedData);
+            }
+        }
+        public void Broadcast(SoketinData data) {
+            Broadcast(data.GetBytes());
+        }
+        public void Send(SoketinUser client, byte[] data) {
+            var user = m_clients.Find((c) => { return c._socket == client._socket; });
+            if (user != null) {
+                var packedData = SoketinUtility.PackRawData(data);
+                client._socket.BeginSend(packedData, 0, packedData.Length, 0, new AsyncCallback(_onBeginSend), client);
+            }
+        }
+        public void Send(SoketinUser client, SoketinData data) {
+            Send(client, data.GetBytes());
+        }
+        public void Send(int clientId, byte[] data) {
+            var client = m_clients.Find((c) => { return c.id == clientId; });
+            Send(client, data);
+        }
+        public void Send(int clientId, SoketinData data) {
+            Send(clientId, data.GetBytes());
+        }
+
+        private void _onBeginAccept(IAsyncResult ar) {
+            m_signalAccept.Set();
+            if (m_signalStop)
+                return;
+            var client = ((Socket)ar.AsyncState).EndAccept(ar);
+            var newClient = new SoketinUser() {
+                _id = m_userID,
+                _ipAddress = ((IPEndPoint)client.RemoteEndPoint).Address.ToString(),
+                _port = ((IPEndPoint)client.RemoteEndPoint).Port,
+                _socket = client,
+            };
+            m_clients.Add(newClient);
+            client.BeginReceive(m_buffer, 0, m_buffer.Length, 0, new AsyncCallback(_onBeginReceive), client);
+            _execute((Action<SoketinUser>)onEvent.OnClientConnected,newClient);
+            m_userID++;
+        }
+        private void _onBeginReceive(IAsyncResult ar) {
+            var client = (Socket)ar.AsyncState;
+            var user = m_clients.Find((e) => { return e._socket == client; });
+            try
+            {
+                int byteReaded = client.EndReceive(ar);
+                if (byteReaded > 0) {
+                    var packs = SoketinUtility.SplitRawPacket(m_buffer, byteReaded);
+                    foreach (var pack in packs)
+                        _execute((Action<SoketinUser, byte[]>)onEvent.OnDataRecieved, client, pack);
+                }
+                if (!m_signalStop)
+                    client.BeginReceive(m_buffer, 0, m_buffer.Length, 0, new AsyncCallback(_onBeginReceive), client);
+            }
+            catch(Exception e){
+                _execute((Action<Exception, object>)onEvent.OnError, e, user);
+                client.Close();
+                m_clients.Remove(user);
+                Console.WriteLine("Client Disconnected");
+                _execute((Action<SoketinUser>)onEvent.OnClientDisconnected, user);
+            }
+        }
+        private void _onBeginSend(IAsyncResult ar) {
+            var client = (Socket)ar.AsyncState;
+            var byteTransfered = client.EndSend(ar);
+        }
+        private void _listenerThread() {
+            while (!m_signalStop) {
+                m_signalAccept.Reset();
+                m_socket.BeginAccept(new AsyncCallback(_onBeginAccept), m_socket);
+                m_signalAccept.Wait();
+            }
+        }
+        private void _execute(Delegate del, params object[] args) {
+            if (useDispatcher)
+                SoketinDispatcher.AddExecution(del, args);
             else
-            {
-                foreach (var client in m_clientSockets)
-                {
-                    IPAddress address = ((IPEndPoint)client.RemoteEndPoint).Address;
-                    if (address.ToString() == ip) {
-                        client.BeginSend(data, 0, data.Length, SocketFlags.None, (e) => {
-                            OnDataSended?.Invoke(address, client.EndSend(e)); 
-                        }, null);
-                        return;
-                    }
-                }
-            }
-        }
-        protected override void ThreadWorker(object obj)
-        {
-            while (!m_stopSignal)
-            {
-                if (m_clientSockets.Count > 0)
-                {
-                    var clients = new List<Socket>();
-                    clients.AddRange(m_clientSockets);
-                    Socket.Select(clients, clients, null, 10);
-                    foreach (var client in clients)
-                    {
-                        m_clientSockets.Remove(client);
-                        OnUserDisconnected?.Invoke(((IPEndPoint)client.RemoteEndPoint).Address);
-                    }
-                }
-                Thread.Sleep(1);
-            };
+                del?.DynamicInvoke(args);
         }
     }
 }

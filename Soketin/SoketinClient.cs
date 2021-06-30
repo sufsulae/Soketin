@@ -1,4 +1,4 @@
-﻿/* Copyright © 2020 Yusuf Sulaeman <ucupxh@gmail.com>
+﻿/* Copyright © 2021 Yusuf Sulaeman <sufsulae@gmail.com>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy of 
  * this software and associated documentation files (the "Software"), to deal in 
@@ -17,6 +17,7 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE 
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
+
 using System;
 using System.Net;
 using System.Net.Sockets;
@@ -24,106 +25,174 @@ using System.Threading;
 
 namespace Soketin
 {
-    public class SoketinClient : SoketinBase
-    {
-        public bool AutoReconnect { get; set; }
-        public bool isConnected { get; private set; }
-        public Socket Server { get; private set; }
+    public class SoketinClient {
 
-        public Action OnConnected;
-        public Action OnDisconnected;
-
-        private bool m_stopSignal;
-
-        //Contructor
-        public SoketinClient(int port)
+        public int bufferSize
         {
-            Socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            Socket.DontFragment = true;
+            get { return m_buffer.Length; }
+            set {
+                if (value != m_buffer.Length) {
+                    m_buffer = new byte[value];
+                }
+            }
+        }
+        public bool autoReconnect { get; set; }
+        public bool useDispatcher { get; set; }
+        public SoketinEvent onEvent {
+            get { return m_event; }
+            set {
+                if (value == null)
+                    m_event = new SoketinEventImpl();
+                else
+                    m_event = value;
+            }
+        }
+        public SoketinUser server { get; private set; }
+
+        private byte[] m_buffer;
+        private Socket m_socket;
+        
+        private bool m_stopSignal;
+        private IPAddress m_ip = null;
+        private int m_port = 0;
+        private ManualResetEventSlim m_signalRecieve;
+        private SoketinEvent m_event;
+
+        public SoketinClient() {
+            m_buffer = new byte[8196];
+            onEvent = new SoketinEventImpl();
+        }
+        ~SoketinClient() {
+            Disconnect();
         }
 
-        //Public Method
-        public void Connect(string address, int port) {
-            if (isConnected)
-                return;
-            var addressEndPoint = new IPEndPoint(IPAddress.Parse(address), port);
-            SocketAsyncEventArgs recArg = new SocketAsyncEventArgs();
-            recArg.SetBuffer(new byte[BufferSize], 0, (int)BufferSize);
-            recArg.Completed += (obj, e) =>
-            {
-                if (e.SocketError == SocketError.Success && e.BytesTransferred > 0)
-                {
-                    var splittedData = SoketinUtility.SplitRawPacket(e.Buffer, e.BytesTransferred);
-                    foreach (var data in splittedData)
-                    {
-                        OnDataRecieved?.Invoke((addressEndPoint).Address, data);
+        public async void Connect(string address, uint port) {
+            m_stopSignal = false;
+            try {
+                var hostEntry = await Dns.GetHostEntryAsync(address);
+                foreach (var addr in hostEntry.AddressList) {
+                    if (addr.AddressFamily == AddressFamily.InterNetwork) {
+                        m_ip = addr;
+                        break;
                     }
                 }
-                if (!m_stopSignal)
-                    Socket.ReceiveAsync(e);
-            };
+            }
+            catch (Exception e) {
+                Console.WriteLine(e);
+                _execute((Action<Exception, object>)onEvent.OnError, e, null);
+;            }
+            if (m_ip != null) {
+                m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                m_socket.DontFragment = true;
 
-            SocketAsyncEventArgs connArg = new SocketAsyncEventArgs();
-            connArg.RemoteEndPoint = addressEndPoint;
-            connArg.Completed += (obj, e) =>
-            {
-                if (e.SocketError == SocketError.Success)
-                {
-                    Server = e.ConnectSocket;
-                    isConnected = true;
-                    OnConnected?.Invoke();
-                    Socket.ReceiveAsync(recArg);
-                }
-                else if (!m_stopSignal)
-                    Socket.ConnectAsync(e);
-            };
-            Socket.ConnectAsync(connArg);
-
-            _thread.Start(connArg);
+                m_signalRecieve = new ManualResetEventSlim(false);
+                m_port = (int)port;
+                m_socket.BeginConnect(m_ip, m_port, new AsyncCallback(_onBeginConnect), m_socket);
+                _execute((Action)onEvent.OnServiceStart);
+            }
         }
         public void Disconnect() {
-            if (!isConnected)
-                return;
             m_stopSignal = true;
-            _thread.Join();
-            Socket.BeginDisconnect(true, (e) => {
-                isConnected = false;
-                Socket.EndDisconnect(e);
-            }, null);
+            m_socket.BeginDisconnect(true, new AsyncCallback(_onBeginDisconnect), m_socket);
         }
-        public void Send(byte[] data, Action<int> OnSended = null) {
-            if (Socket.Connected) {
-                SocketAsyncEventArgs sendArgs = new SocketAsyncEventArgs();
-                sendArgs.RemoteEndPoint = Server.RemoteEndPoint;
-                sendArgs.Completed += (obj, e) => {
-                    if (e.SocketError == SocketError.Success) {
-                        OnDataSended?.Invoke(((IPEndPoint)Server.RemoteEndPoint).Address, e.BytesTransferred);
-                    }
+        public void Send(byte[] data) {
+            if (m_stopSignal)
+                return;
+            var packedData = SoketinUtility.PackRawData(data);
+            m_socket.BeginSend(packedData, 0, packedData.Length, 0, new AsyncCallback(_onBeginSend), m_socket);
+        }
+        public void Send(SoketinData data) {
+            Send(data.GetBytes());
+        }
+
+        private void _onBeginConnect(IAsyncResult ar) {
+            if (m_stopSignal)
+                return;
+            var socket = (Socket)ar.AsyncState;
+            try {
+                socket.EndConnect(ar);
+                server = new SoketinUser() {
+                    _ipAddress = ((IPEndPoint)socket.RemoteEndPoint).Address.ToString(),
+                    _port = ((IPEndPoint)socket.RemoteEndPoint).Port,
+                    _socket = socket,
                 };
-                var packedData = SoketinUtility.PackRawData(data);
-                sendArgs.SetBuffer(packedData, 0, packedData.Length);
-                Socket.SendAsync(sendArgs);
+                _execute((Action)onEvent.OnServerConnected);
+                if(!m_stopSignal)
+                    m_socket.BeginReceive(m_buffer, 0, m_buffer.Length, 0, new AsyncCallback(_onBeginRecieve), m_socket);
+            }
+            catch (Exception e) {
+                Console.WriteLine(e);
+                _execute((Action<Exception, object>)onEvent.OnError, e, null);
+                if (autoReconnect)
+                    socket.BeginConnect(m_ip, m_port, new AsyncCallback(_onBeginConnect), socket);
             }
         }
-        protected override void ThreadWorker(object userData)
-        {
-            while (!m_stopSignal) {
-                if (Socket.Poll(100, SelectMode.SelectRead) && 
-                    Socket.Poll(100, SelectMode.SelectWrite))
-                {
-                    if (Server != null)
-                    {
-                        Server = null;
-                        Socket.Disconnect(true);
-                        isConnected = false;
-                        OnDisconnected?.Invoke();
-                        if (AutoReconnect) {
-                            Socket.ConnectAsync((SocketAsyncEventArgs)userData);
-                        }
+        private void _onBeginDisconnect(IAsyncResult ar) {
+            var socket = (Socket)ar.AsyncState;
+            try
+            {
+                socket.EndDisconnect(ar);
+                _execute((Action)onEvent.OnServerDisconnected);
+                socket.Shutdown(SocketShutdown.Both);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine();
+                _execute((Action<Exception, object>)onEvent.OnError, e, null);
+            }
+            finally {
+                socket.Close();
+                _execute((Action)onEvent.OnServiceStop);
+                server = null;
+            }
+        }
+        private void _onBeginRecieve(IAsyncResult ar) {
+            if (m_stopSignal)
+                return;
+            var socket = (Socket)ar.AsyncState;
+            try
+            {
+                int byteReaded = socket.EndReceive(ar);
+                if (byteReaded > 0) {
+                    var packs = SoketinUtility.SplitRawPacket(m_buffer, byteReaded);
+                    foreach (var pack in packs) {
+                        _execute((Action<SoketinUser, byte[]>)onEvent.OnDataRecieved, server, pack);
                     }
                 }
-                Thread.Sleep(1);
+                m_socket.BeginReceive(m_buffer, 0, m_buffer.Length, 0, new AsyncCallback(_onBeginRecieve), m_socket);
             }
+            catch (Exception e)
+            {
+                _execute((Action<Exception, object>)onEvent.OnError, e, null);
+                if (autoReconnect)
+                    socket.BeginDisconnect(true, new AsyncCallback(_onReconnect), socket);
+                else
+                    Disconnect();
+            }
+        }
+        private void _onReconnect(IAsyncResult ar) {
+            var socket = (Socket)ar.AsyncState;
+            socket.EndDisconnect(ar);
+            socket.BeginConnect(m_ip, (int)m_port, new AsyncCallback(_onBeginConnect), socket);
+        }
+        private void _onBeginSend(IAsyncResult ar) {
+            try
+            {
+                var socket = (Socket)ar.AsyncState;
+                var byteTransfered = socket.EndSend(ar);
+            }
+            catch (Exception e) {
+                Console.WriteLine(e);
+                _execute((Action<Exception, object>)onEvent.OnError, e);
+            }
+        }
+
+        private void _execute(Delegate del, params object[] args) {
+            if (useDispatcher)
+                SoketinDispatcher.AddExecution(del, args);
+            else
+                del?.DynamicInvoke(args);
         }
     }
 }
